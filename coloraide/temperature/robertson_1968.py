@@ -137,7 +137,30 @@ class Robertson1968(CCT):
         current: CCTEntry,
         factor: float
     ) -> tuple[float, float]:
-        """Calculate the Duv."""
+        """
+        Calculate the unit normal of the isotherm.
+
+        Each entry stores one of the two isotherm normals, written as `(1, slope)` normalized,
+        so the stored direction is by construction the normal that faces increasing `u`.
+        Because the locus `u` increases strictly with mired, the tangent is never vertical and
+        that normal's `v` component can never be zero: it is bounded away from zero (minimum
+        |dv| = 0.2365 over the default table), which is what makes the fix below numerically safe.
+
+        Which of the two normals `(1, slope)` actually is depends on the sign of the tangent's
+        `v` component, and the locus `v` is not monotonic. It peaks inside the table's slope
+        sign change interval (mired 600/625, i.e. 1600K - 1666.7K for D65), where `slope`
+        crosses from negative to positive. So the stored direction is the "above the curve"
+        normal on the low temperature side of that vertex and the "below the curve" normal on
+        the high temperature side, and a stored or interpolated `dv` carries no reliable Duv
+        sign. That is the source of the historical inversion, which only ever affected the
+        low side of the vertex.
+
+        The orientation is canonicalized here, and only here, to the documented convention:
+        a positive Duv lies on the increasing `v` side ("above the curve"). Both `to_cct` and
+        `from_cct` consume this same normal, so reading and generating agree, and a custom
+        table cannot reintroduce the split because nothing outside this method assumes a
+        particular stored orientation.
+        """
 
         pslope = previous.slope
         slope = current.slope
@@ -146,17 +169,22 @@ class Robertson1968(CCT):
         u2 = current.du
         v2 = current.dv
 
-        # Check for discontinuity and adjust accordingly
+        # Align the two isotherms when the pair straddles the locus vertex (slope sign change)
         if (pslope * slope) < 0:
             u2 *= -1
             v2 *= -1
 
-        # Find vector from the locus to our point.
+        # Interpolate the orientation across the pair.
         du = alg.lerp(u2, u1, factor)
         dv = alg.lerp(v2, v1, factor)
         length = math.sqrt(du ** 2 + dv ** 2)
         du /= length
         dv /= length
+
+        # Canonical orientation: positive Duv is always on the increasing `v` side.
+        if dv < 0:
+            du = -du
+            dv = -dv
 
         return du, dv
 
@@ -164,17 +192,14 @@ class Robertson1968(CCT):
         """Calculate a color's CCT."""
 
         dip = kelvin = duv = 0.0
-        sign = -1
         u, v = color.split_chromaticity(self.CHROMATICITY)[:-1]
         end = len(self.table) - 1
 
-        # Search for line pair coordinate is between.
+        # Search for the pair of isotherms that the coordinate falls between.
         for index, current in enumerate(self.table):
-            # Get the distance
-            # If a table was generated with values down to 1000K,
-            # we would get a positive slope, so to keep logic the
-            # same, adjust distance calculation such that negative
-            # is still what we are looking for.
+            # Signed distance from this isotherm. The sign convention is normalized by the
+            # slope direction so that crossing the locus is always a change from positive to
+            # negative, regardless of which side of the locus vertex the row is on.
             slope = current.slope
             if slope < 0:
                 di = (v - current.v) - slope * (u - current.u)
@@ -193,9 +218,10 @@ class Robertson1968(CCT):
                 mired = (pmired - factor * (pmired - current.mired))
                 kelvin = 1.0E6 / mired if mired else math.inf
 
-                # Calculate Duv
+                # Calculate Duv. The normal is already canonicalized so that a positive
+                # value lies on the increasing `v` side, so no further sign is applied.
                 du, dv = self.calc_du_dv(previous, current, 1 - factor)
-                duv = sign * (
+                duv = (
                     du * (u - alg.lerp(previous.u, current.u, factor)) +
                     dv * (v - alg.lerp(previous.v, current.v, factor))
                 )
@@ -233,16 +259,13 @@ class Robertson1968(CCT):
                 u = alg.lerp(future.u, current.u, f)
                 v = alg.lerp(future.v, current.v, f)
 
-                # Calculate the offset along the slope
+                # Calculate the offset along the slope. The normal is canonicalized
+                # (positive Duv is on the increasing `v` side), so generating and reading
+                # a color use the same orientation and round trip consistently.
                 if duv:
-                    # Calculate the sign
-                    slope = future.slope
-                    sign = 1.0 if not (slope * current.slope) < 0 and slope >= 0 else -1.0
-
-                    # Adjust the uv by the calculated offset
                     du, dv = self.calc_du_dv(current, future, f)
-                    u += du * sign * duv
-                    v += dv * sign * duv
+                    u += du * duv
+                    v += dv * duv
                 break
 
         return (u, v), self.CHROMATICITY

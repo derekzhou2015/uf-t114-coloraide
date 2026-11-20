@@ -6,6 +6,10 @@ icon: lucide/scroll-text
 ## 8.16
 
 -   **NEW**: Ray Trace gamut mapping method allows specifying number of rays to cast (default 4).
+-   **FIX**: Robertson 1968 `cct()` reported an inverted Duv sign for colors below the locus vertex (roughly 1600K
+    - 1666.7K for the default table), so a positive Duv read back negative and the two registered CCT methods
+    disagreed on the same color. The isotherm normals are now canonicalized to the documented convention (positive
+    Duv is above the curve) in one place shared by `cct()` and `blackbody()`.
 -   **FIX**: Improve HCT --> XYZ conversion by using a more optimized solver that focus on just calculating J <--> Y
     while solving for the proper J needed instead of doing the entire CAM16 conversion when approximating the proper J.
 -   **FIX**: Premultiplication should be applied after an undefined channel inherits another colors channel value during
